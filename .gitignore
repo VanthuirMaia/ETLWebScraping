@@ -48,6 +48,7 @@ ENV/
 ENV.bak/
 venv.bak/
 .venv
+.env
 
 # Visual Studio Code #
 ######################
