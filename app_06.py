@@ -49,7 +49,14 @@ def save_to_database(conn, produto_info):
     new_row = pd.DataFrame([produto_info])
     new_row.to_sql("prices", conn, if_exists="append", index=False)
 
-    
+def get_max_price(conn):
+    # Conectar com meu DB
+    cursor = conn.cursor()
+    # Preço maximo historico
+    cursor.execute("SELECT MAX(new_price), timestamp FROM prices")
+    # Retornar o valor
+    result = cursor.fetchone()
+    return result[0], result[1]
 
 if __name__ == "__main__":
 
@@ -59,6 +66,18 @@ if __name__ == "__main__":
     while True:
         page_content = fetch_page()
         produto_info = parse_page(page_content)
+        current_price = produto_info["new_price"]
+
+        max_price, max_timestamp = get_max_price(conn)
+        max_price_timestamp = None
+
+        if current_price > max_price:
+            print("Preço maior detectado")
+            max_price = current_price
+            max_price_timestamp = produto_info["timestamp"]
+        else:
+            print(f"O preço máximo registrado é {max_price}")
+
         save_to_database(conn, produto_info)
         print("Dados salvos no banco de dados", produto_info)
         time.sleep(10)
