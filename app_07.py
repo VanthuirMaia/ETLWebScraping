@@ -12,17 +12,29 @@ bot = Bot(token=TOKEN)
 
 
 def fetch_page():
-    url = "https://www.mercadolivre.com.br/combo-teclado-e-mouse-sem-fio-logitech-mk345-layout-abnt2/p/MLB18610873#polycard_client=search-nordic&searchVariation=MLB18610873&wid=MLB2759289419&position=6&search_layout=grid&type=product&tracking_id=4530e096-b8fd-4ac0-9f3b-e0489a0e5de4&sid=search"
-    response = requests.get(url)
+    url = "https://www.mercadolivre.com.br/combo-teclado-e-mouse-sem-fio-logitech-mk345-layout-abnt2/p/MLB18610873"
+    headers = {"User-Agent": "Mozilla/5.0"}  # força o site a retornar HTML completo
+    response = requests.get(url, headers=headers, timeout=10)
     return response.text
+
 
 def parse_page(html):
     soup = BeautifulSoup(html, "html.parser")
-    product_name = soup.find("h1", class_="ui-pdp-title").get_text()
-    prices: list = soup.find_all("span", class_="andes-money-amount__fraction")
-    old_price: int = int(prices[0].get_text().replace(".", ""))
-    new_price: int = int(prices[1].get_text().replace(".", ""))
-    installments_price: int = int(prices[2].get_text().replace(".", ""))
+
+    # Nome do produto
+    title_tag = soup.find("h1")
+    product_name = title_tag.get_text(strip=True) if title_tag else "Título não encontrado"
+
+    # Preços
+    price_tags = soup.find_all("span", class_=lambda x: x and "andes-money-amount__fraction" in x)
+    prices = [int(tag.get_text().replace(".", "")) for tag in price_tags]
+
+    old_price = prices[0] if len(prices) > 0 else None
+    new_price = prices[1] if len(prices) > 1 else None
+    installments_price = prices[2] if len(prices) > 2 else None
+
+    if new_price is None:
+        print("⚠️ Atenção: não foi possível capturar o preço atual.")
 
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -34,13 +46,12 @@ def parse_page(html):
         "timestamp": timestamp
     }
 
+
 def create_connection(db_name="ETLWebScraping.db"):
-    # Cria a conexão com o banco de dados
-    conn = sqlite3.connect(db_name)
-    return conn
+    return sqlite3.connect(db_name)
+
 
 def setup_database(conn):
-    # Cria a tabela no banco de dados
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS prices (
@@ -53,51 +64,67 @@ def setup_database(conn):
         )
     """)
     conn.commit()
-    
+
 
 def save_to_database(conn, produto_info):
     new_row = pd.DataFrame([produto_info])
     new_row.to_sql("prices", conn, if_exists="append", index=False)
 
+
 def get_max_price(conn):
-    # Conectar com meu DB
     cursor = conn.cursor()
-    # Preço maximo historico
     cursor.execute("SELECT MAX(new_price), timestamp FROM prices")
-    # Retornar o valor
     result = cursor.fetchone()
     return result[0], result[1]
 
+
 async def send_telegram_message(text):
-    await bot.send_message(chat_id=CHAT_ID, text=text)
+    try:
+        await bot.send_message(chat_id=CHAT_ID, text=text)
+    except Exception as e:
+        print(f"❌ Erro ao enviar mensagem para Telegram: {e}")
+
 
 async def main():
     conn = create_connection()
     setup_database(conn)
 
     while True:
-        # Faz a requisição e parseia a página
         page_content = fetch_page()
         produto_info = parse_page(page_content)
         current_price = produto_info["new_price"]
 
-        # Obtem o maior preço ja salvo
+        # Se não conseguiu capturar preço, pula
+        if current_price is None:
+            print("⚠️ Preço não encontrado. Tentando novamente em 30 segundos...")
+            await asyncio.sleep(30)
+            continue
+
+        # Preço máximo histórico
         max_price, max_price_timestamp = get_max_price(conn)
 
         if max_price is None or current_price > max_price:
-            print(f"Preço maior detectado: {current_price}")
-            await send_telegram_message(f"Preço maior detectado: {current_price}")
+            msg = f"📈 Novo preço máximo detectado: R$ {current_price},00"
+            print(msg)
+            await send_telegram_message(msg)
             max_price = current_price
             max_price_timestamp = produto_info["timestamp"]
         else:
-            print(f"O preço máximo registrado é {max_price} em {max_price_timestamp}")
-            await send_telegram_message(f"Olá usuário, o preço não alterou, espere mais um pouco!!! R$ {max_price},00 esse preço foi em {max_price_timestamp}")
+            msg = (
+                f"ℹ️ Preço não mudou. Máximo registrado: R$ {max_price},00 "
+                f"em {max_price_timestamp}"
+            )
+            print(msg)
+            await send_telegram_message(msg)
 
+        # Salva no banco
         save_to_database(conn, produto_info)
-        print("Dados salvos no banco de dados", produto_info)
-        
-        await asyncio.sleep(10)
-    
+        print("✅ Dados salvos:", produto_info)
+
+        await asyncio.sleep(30)  # intervalo entre execuções
+
     conn.close()
 
-asyncio.run(main())
+
+if __name__ == "__main__":
+    asyncio.run(main())
